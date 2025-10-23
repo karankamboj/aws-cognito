@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Dashboard</title>
+<style>
+  :root { --bg:#f6f7fb; --card:#fff; --border:#e5e7eb; --text:#111; --muted:#6b7280; }
+  *{box-sizing:border-box;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,sans-serif}
+  body{margin:0;display:grid;place-items:center;min-height:100vh;background:var(--bg);color:var(--text)}
+  .card{width:100%;max-width:720px;background:var(--card);border:1px solid var(--border);border-radius:16px;padding:24px;box-shadow:0 10px 30px rgba(0,0,0,.05)}
+  h1{margin:0 0 8px;font-size:1.5rem}
+  p{margin:0 0 8px;color:var(--muted)}
+  pre{background:#0b1020;color:#d6e8ff;padding:12px;border-radius:10px;overflow:auto;max-height:260px;font-size:.85rem}
+  .row{display:flex;gap:12px;margin-top:16px;flex-wrap:wrap}
+  button{padding:10px 14px;border:1px solid var(--border);background:#111;color:#fff;border-radius:10px;font-weight:600;cursor:pointer}
+  input{padding:10px;border:1px solid var(--border);border-radius:10px;font-size:1rem}
+  label{display:block;font-size:.9rem;margin:12px 0 6px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
+  .box{border:1px solid var(--border);border-radius:12px;padding:16px;background:#fff}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Dashboard</h1>
+    <p id="who"></p>
+
+    <div class="row">
+      <button id="logoutBtn">Logout</button>
+      <button id="meBtn">Get Profile (GetUser)</button>
+      <button id="refreshBtn">Refresh Tokens</button>
+    </div>
+
+    <div class="grid">
+      <div class="box">
+        <h3>Change Password</h3>
+        <label for="oldPass">Current password</label>
+        <input id="oldPass" type="password" placeholder="current password" autocomplete="current-password" />
+        <label for="newPass">New password</label>
+        <input id="newPass" type="password" placeholder="new password" autocomplete="new-password" />
+        <div class="row"><button id="changePassBtn">Update Password</button></div>
+        <pre id="outChange">(change password response)</pre>
+      </div>
+      <div class="box">
+        <h3>Tokens</h3>
+        <pre id="tokens">(none)</pre>
+      </div>
+    </div>
+  </div>
+
+<script>
+const CONFIG = {
+  region: "us-east-1",
+  clientId: "2biqtl9husd64m8jghotod2uub",
+  userPoolDomain: "us-east-1y82pz5sav",  // domain prefix only
+  loginPage: "http://localhost:8080/k.html"
+};
+
+const raw = sessionStorage.getItem("cog_tokens");
+if (!raw) location.replace(CONFIG.loginPage);
+let tokens = JSON.parse(raw);
+
+const $ = (id) => document.getElementById(id);
+const out = (id, v) => { $(id).textContent = typeof v === "string" ? v : JSON.stringify(v, null, 2); };
+
+out("tokens", tokens);
+
+function parseJwt(t) {
+  try {
+    const [, payload] = t.split(".");
+    const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+    return JSON.parse(decodeURIComponent(Array.prototype.map.call(json, c =>
+      "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2)
+    ).join("")));
+  } catch { return {}; }
+}
+const claims = tokens.id_token ? parseJwt(tokens.id_token) : {};
+$("who").textContent =
+  claims.email ? `Signed in as ${claims.email}` :
+  claims["cognito:username"] ? `Signed in as ${claims["cognito:username"]}` :
+  "Signed in";
+
+async function idp(target, body, extraHeaders = {}) {
+  const res = await fetch(`https://cognito-idp.${CONFIG.region}.amazonaws.com/`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-amz-json-1.1",
+      "X-Amz-Target": `AWSCognitoIdentityProviderService.${target}`,
+      ...extraHeaders
+    },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(()=>({}));
+  if (!res.ok) throw data;
+  return data;
+}
+
+// Change password
+async function changePassword() {
+  const previous = $("oldPass").value;
+  const proposed = $("newPass").value;
+  if (!previous || !proposed) return out("outChange", "Fill both fields.");
+  try {
+    const data = await idp(
+      "ChangePassword",
+      { PreviousPassword: previous, ProposedPassword: proposed, AccessToken: tokens.AccessToken }
+    );
+    out("outChange", data);
+  } catch (e) { out("outChange", e); }
+}
+
+// GetUser
+async function getMe() {
+  try {
+    const data = await idp("GetUser", {}, { Authorization: tokens.access_token });
+    out("tokens", { ...tokens, user: data });
+  } catch (e) { out("tokens", e); }
+}
+
+// Refresh
+// Small helper: URL-encode body
+function formBody(obj) {
+  return new URLSearchParams(
+    Object.entries(obj).filter(([_, v]) => v !== undefined && v !== null)
+  ).toString();
+}
+
+// Detects which token shape we have and refreshes accordingly
+async function refresh() {
+  // Normalize names: Hosted UI uses 'refresh_token', InitiateAuth uses 'RefreshToken'
+  const hasHostedUI = !!tokens.refresh_token;
+  const hasUserPool = !!tokens.RefreshToken;
+
+  const base = `${CONFIG.userPoolDomain}.auth.${CONFIG.region}.amazoncognito.com`;
+
+  if (!hasHostedUI && !hasUserPool) {
+    alert("No refresh token available.");
+    return;
+  }
+
+  try {
+    if (hasHostedUI) {
+      // 🔹 Federated (Google/Hosted UI) path — use OAuth2 token endpoint
+      const body = {
+        grant_type: "refresh_token",
+        client_id: CONFIG.clientId,
+        refresh_token: tokens.refresh_token,
+        // Only include client_secret for confidential clients (server-side).
+        // Do NOT ship client secrets in a public browser app.
+        client_secret: CONFIG.clientSecret
+      };
+
+      const resp = await fetch(`https://${base}/oauth2/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: formBody(body)
+      });
+
+      if (!resp.ok) {
+        const err = await resp.text();
+        console.error("OAuth refresh failed:", err);
+        alert("Refresh failed");
+        return;
+      }
+
+      const data = await resp.json();
+      // Cognito may or may not return a new refresh_token; keep the old one if omitted.
+      tokens = {
+        ...tokens,
+        access_token: data.access_token ?? tokens.access_token,
+        id_token: data.id_token ?? tokens.id_token,
+        refresh_token: data.refresh_token ?? tokens.refresh_token,
+        expires_in: data.expires_in ?? tokens.expires_in,
+        token_type: data.token_type ?? tokens.token_type,
+      };
+
+      sessionStorage.setItem("cog_tokens", JSON.stringify(tokens));
+      out("tokens", tokens);
+      console.log("Tokens refreshed (Hosted UI)", tokens);
+
+    } else {
+      // 🔹 Direct User Pool path — use InitiateAuth REFRESH_TOKEN_AUTH
+      const data = await idp("InitiateAuth", {
+        AuthFlow: "REFRESH_TOKEN_AUTH",
+        ClientId: CONFIG.clientId,
+        AuthParameters: { REFRESH_TOKEN: tokens.RefreshToken }
+      });
+
+      tokens = {
+        ...tokens,
+        // AuthenticationResult returns AccessToken/IdToken/ExpiresIn/TokenType (no new RefreshToken)
+        AccessToken: data.AuthenticationResult.AccessToken,
+        IdToken: data.AuthenticationResult.IdToken,
+        ExpiresIn: data.AuthenticationResult.ExpiresIn,
+        TokenType: data.AuthenticationResult.TokenType
+      };
+
+      sessionStorage.setItem("cog_tokens", JSON.stringify(tokens));
+      out("tokens", tokens);
+      console.log("Tokens refreshed (User Pool)", tokens);
+    }
+  } catch (e) {
+    console.error(e);
+    alert("Refresh failed");
+  }
+}
+
+// GlobalSignOut (optional)
+async function globalSignOut(accessToken) {
+  try {
+    await fetch(`https://cognito-idp.${CONFIG.region}.amazonaws.com/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-amz-json-1.1",
+        "X-Amz-Target": "AWSCognitoIdentityProviderService.GlobalSignOut"
+      },
+      body: JSON.stringify({ AccessToken: accessToken })
+    });
+  } catch (_) { /* ignore */ }
+}
+
+// LOGOUT: revoke Hosted UI refresh token, then clear Hosted UI cookies
+document.getElementById("logoutBtn").addEventListener("click", async () => {
+  const usedHostedUi = sessionStorage.getItem("usedHostedUi") === "1";
+  const base = `${CONFIG.userPoolDomain}.auth.${CONFIG.region}.amazoncognito.com`;
+  const access = tokens.AccessToken;
+  const refresh = tokens.refresh_token;
+    
+  // 1) If we logged in via Hosted UI and we have a refresh token, revoke it
+  if (usedHostedUi && refresh) {
+    try {
+      const body = new URLSearchParams();
+      body.set("client_id", CONFIG.clientId);
+      body.set("token", refresh);
+      body.set("token_type_hint", "refresh_token"); // helpful hint
+
+      await fetch(`https://${base}/oauth2/revoke`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString()  // ensure a string body
+      });
+    } catch (err) {
+      console.warn("Token revoke failed", err);
+    }
+  }
+
+  // 2) Best-effort: pool-wide sign-out (revokes all refresh tokens for this user)
+  if (access) await globalSignOut(access);
+
+  // 3) Clear local tokens
+  sessionStorage.removeItem("cog_tokens");
+  sessionStorage.removeItem("usedHostedUi");
+
+  // 4) Finish logout
+  if (usedHostedUi) {
+    // Clear Hosted UI cookies to avoid silent re-login
+    const logoutUrl =
+      `https://${base}/logout?client_id=${encodeURIComponent(CONFIG.clientId)}` +
+      `&logout_uri=${encodeURIComponent(CONFIG.loginPage)}`; // must be in Allowed sign-out URLs
+    location.assign(logoutUrl);
+  } else {
+    location.assign(CONFIG.loginPage);
+  }
+});
+
+// Bind buttons
+$("changePassBtn").addEventListener("click", changePassword);
+$("meBtn").addEventListener("click", getMe);
+$("refreshBtn").addEventListener("click", refresh);
+</script>
+</body>
+</html>

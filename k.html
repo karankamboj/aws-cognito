@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Auth • Cognito + Google</title>
+<style>
+  :root { --bg:#f6f7fb; --card:#fff; --border:#e5e7eb; --text:#111; --muted:#6b7280; }
+  *{box-sizing:border-box;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,sans-serif}
+  body{margin:0;display:grid;place-items:center;min-height:100vh;background:var(--bg);color:var(--text)}
+  .card{width:100%;max-width:520px;background:var(--card);border:1px solid var(--border);border-radius:16px;padding:24px;box-shadow:0 10px 30px rgba(0,0,0,.05)}
+  h1{margin:0 0 8px;font-size:1.4rem}
+  p{margin:0 0 16px;color:var(--muted);font-size:.95rem}
+  label{display:block;font-size:.9rem;margin:12px 0 6px}
+  input,select{width:100%;padding:12px;border:1px solid var(--border);border-radius:10px;font-size:1rem}
+  .row{display:flex;gap:12px;margin-top:16px;flex-wrap:wrap}
+  button{padding:12px 14px;border:1px solid var(--border);background:#111;color:#fff;border-radius:10px;font-weight:600;cursor:pointer}
+  button.alt{background:#fff;color:#111}
+  .sep{display:flex;align-items:center;gap:10px;margin:16px 0;color:var(--muted)}
+  .sep::before,.sep::after{content:"";height:1px;background:var(--border);flex:1}
+  pre{background:#0b1020;color:#d6e8ff;padding:12px;border-radius:10px;overflow:auto;max-height:260px;font-size:.8rem}
+  small{color:var(--muted)}
+  .tabs{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+  .tab{padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:#fff;color:#111;cursor:pointer}
+  .tab.active{background:#111;color:#fff}
+  .panel{display:none}
+  .panel.active{display:block}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Cognito Auth Demo</h1>
+    <p>Email/username + password, Google (Hosted UI), register, verify, forgot/reset.</p>
+
+    <div class="tabs">
+      <button class="tab active" data-panel="login">Login</button>
+      <button class="tab" data-panel="register">Register</button>
+      <button class="tab" data-panel="verify">Verify Email</button>
+      <button class="tab" data-panel="forgot">Forgot Password</button>
+      <button class="tab" data-panel="reset">Confirm Reset</button>
+    </div>
+
+    <!-- LOGIN -->
+    <div class="panel active" id="panel-login">
+      <label for="email">Email or Username</label>
+      <input id="email" placeholder="you@example.com" autocomplete="username" />
+      <label for="password">Password</label>
+      <input id="password" type="password" placeholder="••••••••" autocomplete="current-password" />
+      <div class="row">
+        <button id="loginBtn">Login</button>
+        <button class="alt" id="googleBtn">Continue with Google</button>
+      </div>
+      <div class="sep">Result</div>
+      <pre id="out">(responses will appear here)</pre>
+      <small>Tip: For production, exchange tokens in your backend and set Secure, HttpOnly cookies.</small>
+    </div>
+
+    <!-- REGISTER -->
+    <div class="panel" id="panel-register">
+      <label for="regUsername">Username</label>
+      <input id="regUsername" placeholder="your-username" autocomplete="username" />
+      <label for="regEmail">Email</label>
+      <input id="regEmail" type="email" placeholder="you@example.com" autocomplete="email"/>
+      <label for="regPassword">Password</label>
+      <input id="regPassword" type="password" placeholder="Create a strong password" autocomplete="new-password"/>
+      <div class="row">
+        <button id="registerBtn">Create Account</button>
+        <button class="alt" id="resendCodeBtn">Resend Verify Code</button>
+      </div>
+      <div class="sep">Result</div>
+      <pre id="outRegister">(register responses)</pre>
+    </div>
+
+    <!-- VERIFY EMAIL -->
+    <div class="panel" id="panel-verify">
+      <label for="verUsername">Email or Username</label>
+      <input id="verUsername" placeholder="you@example.com" autocomplete="username"/>
+      <label for="verCode">Verification code</label>
+      <input id="verCode" placeholder="123456"/>
+      <div class="row">
+        <button id="verifyBtn">Verify</button>
+      </div>
+      <div class="sep">Result</div>
+      <pre id="outVerify">(verify responses)</pre>
+    </div>
+
+    <!-- FORGOT PASSWORD (start) -->
+    <div class="panel" id="panel-forgot">
+      <label for="fpUsername">Email or Username</label>
+      <input id="fpUsername" placeholder="you@example.com" autocomplete="username"/>
+      <div class="row">
+        <button id="forgotBtn">Send reset code</button>
+      </div>
+      <div class="sep">Result</div>
+      <pre id="outForgot">(forgot responses)</pre>
+    </div>
+
+    <!-- CONFIRM RESET -->
+    <div class="panel" id="panel-reset">
+      <label for="crUsername">Email or Username</label>
+      <input id="crUsername" placeholder="you@example.com" autocomplete="username"/>
+      <label for="crCode">Reset code</label>
+      <input id="crCode" placeholder="123456"/>
+      <label for="crNew">New password</label>
+      <input id="crNew" type="password" placeholder="New password" autocomplete="new-password"/>
+      <div class="row">
+        <button id="confirmResetBtn">Confirm reset</button>
+      </div>
+      <div class="sep">Result</div>
+      <pre id="outReset">(confirm reset responses)</pre>
+    </div>
+  </div>
+
+<script>
+const CONFIG = {
+  region: "us-east-1",
+  clientId: "2biqtl9husd64m8jghotod2uub",          // App client without secret
+  userPoolDomain: "us-east-1y82pz5sav",            // domain prefix only
+  redirectUri: "http://localhost:8080/k.html",     // whitelisted in Cognito
+  postLoginUri: "http://localhost:8080/dashboard.html", // next page after login
+  scopes: "openid phone email profile",
+  idp: "Google"                                    // Hosted UI IdP name (optional)
+};
+
+const $ = (id) => document.getElementById(id);
+const out = (id, v) => { $(id).textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2); };
+
+const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const rand = (len=64) => { const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~'; const arr = new Uint8Array(len); crypto.getRandomValues(arr); return Array.from(arr, x => chars[x % chars.length]).join(''); };
+
+// ---- IDP helper ----
+async function idp(target, body, headers = {}) {
+  const res = await fetch(`https://cognito-idp.${CONFIG.region}.amazonaws.com/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": `AWSCognitoIdentityProviderService.${target}`, ...headers },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw data;
+  return data;
+}
+
+// ---- LOGIN with USER_PASSWORD_AUTH ----
+async function loginPassword() {
+  const username = $('email').value.trim();
+  const password = $('password').value;
+  if (!username || !password) return out('out', "Please fill email/username and password.");
+  try {
+    const data = await idp('InitiateAuth', {
+      AuthFlow: 'USER_PASSWORD_AUTH',
+      ClientId: CONFIG.clientId,
+      AuthParameters: { USERNAME: username, PASSWORD: password }
+    });
+
+    if (data.ChallengeName === 'NEW_PASSWORD_REQUIRED') {
+      out('out', { message: 'NEW_PASSWORD_REQUIRED', params: data.ChallengeParameters });
+      const newPass = prompt('Your account requires a new password. Enter a new password:');
+      if (!newPass) return;
+      const resp = await idp('RespondToAuthChallenge', {
+        ClientId: CONFIG.clientId,
+        ChallengeName: 'NEW_PASSWORD_REQUIRED',
+        ChallengeResponses: { USERNAME: username, NEW_PASSWORD: newPass },
+        Session: data.Session
+      });
+      sessionStorage.setItem('cog_tokens', JSON.stringify(resp.AuthenticationResult));
+      sessionStorage.removeItem('usedHostedUi');
+      location.assign(CONFIG.postLoginUri);
+      return;
+    }
+
+    if (data.ChallengeName) return out('out', { message: 'Challenge', challenge: data.ChallengeName, params: data.ChallengeParameters });
+
+    sessionStorage.setItem('cog_tokens', JSON.stringify(data.AuthenticationResult));
+    sessionStorage.removeItem('usedHostedUi');
+    location.assign(CONFIG.postLoginUri);
+  } catch (e) { out('out', e); }
+}
+
+// ---- GOOGLE (Hosted UI + PKCE) optional ----
+async function loginGoogle() {
+  const code_verifier = rand(64);
+  const state = rand(32);
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(code_verifier));
+  const code_challenge = b64url(digest);
+  sessionStorage.setItem('pkce_code_verifier', code_verifier);
+  sessionStorage.setItem('usedHostedUi', '1');
+  const base = `${CONFIG.userPoolDomain}.auth.${CONFIG.region}.amazoncognito.com`;
+  const u = new URL(`https://${base}/oauth2/authorize`);
+  u.searchParams.set('client_id', CONFIG.clientId);
+  u.searchParams.set('response_type', 'code');
+  u.searchParams.set('redirect_uri', CONFIG.redirectUri);
+  u.searchParams.set('scope', CONFIG.scopes);
+  u.searchParams.set('code_challenge_method', 'S256');
+  u.searchParams.set('code_challenge', code_challenge);
+  u.searchParams.set('identity_provider', CONFIG.idp);
+  u.searchParams.set('state', state);
+  location.assign(u.toString());
+}
+
+// ---- Handle Hosted UI redirect ----
+async function maybeHandleRedirect() {
+  const params = new URLSearchParams(location.search);
+  const code = params.get('code');
+  if (!code) return;
+  const code_verifier = sessionStorage.getItem('pkce_code_verifier');
+  try {
+    const base = `${CONFIG.userPoolDomain}.auth.${CONFIG.region}.amazoncognito.com`;
+    const tokenRes = await fetch(`https://${base}/oauth2/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'authorization_code', client_id: CONFIG.clientId, code, redirect_uri: CONFIG.redirectUri, code_verifier })
+    });
+    const tokens = await tokenRes.json();
+    if (!tokenRes.ok) throw tokens;
+    sessionStorage.setItem('cog_tokens', JSON.stringify(tokens));
+    history.replaceState({}, '', CONFIG.redirectUri);
+    location.assign(CONFIG.postLoginUri);
+  } catch (e) { out('out', e); }
+  finally { sessionStorage.removeItem('pkce_code_verifier'); }
+}
+
+// ---- REGISTER (username + email attr + password) ----
+async function register() {
+  const username = $('regUsername').value.trim();
+  const email = $('regEmail').value.trim();
+  const password = $('regPassword').value;
+  if (!username || !email || !password) return out('outRegister', 'Provide username, email, and password.');
+  try {
+    const data = await idp('SignUp', {
+      ClientId: CONFIG.clientId,
+      Username: username,
+      Password: password,
+      UserAttributes: [{ Name: 'email', Value: email }]
+    });
+    out('outRegister', data);
+  } catch (e) { out('outRegister', e); }
+}
+
+// ---- RESEND VERIFY CODE ----
+async function resendCode() {
+  const username = $('regUsername').value.trim();
+  const emailFallback = $('regEmail').value.trim();
+  const identifier = username || emailFallback;
+  if (!identifier) return out('outRegister', 'Enter username or email to resend the code.');
+  try {
+    const data = await idp('ResendConfirmationCode', { ClientId: CONFIG.clientId, Username: identifier });
+    out('outRegister', data);
+  } catch (e) { out('outRegister', e); }
+}
+
+// ---- CONFIRM SIGN UP (verify email) ----
+async function verifyEmail() {
+  const username = $('verUsername').value.trim();
+  const code = $('verCode').value.trim();
+  if (!username || !code) return out('outVerify', 'Enter username/email and code.');
+  try {
+    const data = await idp('ConfirmSignUp', { ClientId: CONFIG.clientId, Username: username, ConfirmationCode: code });
+    out('outVerify', data);
+  } catch (e) { out('outVerify', e); }
+}
+
+// ---- FORGOT PASSWORD (send code) ----
+async function forgotPassword() {
+  const username = $('fpUsername').value.trim();
+  if (!username) return out('outForgot', 'Enter your username/email.');
+  try {
+    const data = await idp('ForgotPassword', { ClientId: CONFIG.clientId, Username: username });
+    out('outForgot', data);
+  } catch (e) { out('outForgot', e); }
+}
+
+// ---- CONFIRM RESET PASSWORD ----
+async function confirmReset() {
+  const username = $('crUsername').value.trim();
+  const code = $('crCode').value.trim();
+  const newPass = $('crNew').value;
+  if (!username || !code || !newPass) return out('outReset', 'Fill username/email, code, and new password.');
+  try {
+    const data = await idp('ConfirmForgotPassword', { ClientId: CONFIG.clientId, Username: username, ConfirmationCode: code, Password: newPass });
+    out('outReset', data);
+  } catch (e) { out('outReset', e); }
+}
+
+// Tabs
+const tabs = document.querySelectorAll('.tab');
+const panels = {
+  login: document.getElementById('panel-login'),
+  register: document.getElementById('panel-register'),
+  verify: document.getElementById('panel-verify'),
+  forgot: document.getElementById('panel-forgot'),
+  reset: document.getElementById('panel-reset')
+};
+tabs.forEach(btn => btn.addEventListener('click', () => {
+  tabs.forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  Object.values(panels).forEach(p => p.classList.remove('active'));
+  panels[btn.dataset.panel].classList.add('active');
+}));
+
+// Wire up
+$('loginBtn').addEventListener('click', loginPassword);
+$('googleBtn').addEventListener('click', loginGoogle);
+$('registerBtn').addEventListener('click', register);
+$('resendCodeBtn').addEventListener('click', resendCode);
+$('verifyBtn').addEventListener('click', verifyEmail);
+$('forgotBtn').addEventListener('click', forgotPassword);
+$('confirmResetBtn').addEventListener('click', confirmReset);
+
+maybeHandleRedirect();
+</script>
+</body>
+</html>
