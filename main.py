@@ -44,6 +44,11 @@ class GoogleLoginInitResponse(BaseModel):
     expires_at: datetime
     message: str = "Redirect user to login_url to authenticate with Google"
 
+class ChangeGroupRequest(BaseModel):
+    username: str
+    target_group: str = "Admin"
+    remove_from_all_other_groups: bool = True
+
 
 class ForgotPasswordInit(BaseModel):
     username: str  # can be username or email alias, per your pool settings
@@ -329,6 +334,12 @@ async def register_user(user_data: UserRegister):
         
         # Register user
         response = cognito_client.sign_up(**signup_params)
+
+        cognito_client.admin_add_user_to_group(
+            UserPoolId=COGNITO_USER_POOL_ID,
+            Username=user_data.username,
+            GroupName='Guests'
+        )
         
         return {
             "message": "User registered successfully",
@@ -1424,3 +1435,51 @@ async def refresh_google_tokens(request: RefreshRequest):
                 "error_code": result.get("error_code")
             }
         )
+    
+# --- The endpoint ---
+@app.post("/change-group")
+def change_group_to_admin(
+    body: ChangeGroupRequest):
+    """
+    Move a user into a target group (default: 'Admins'). Optionally remove from all other groups.
+    Requires the caller to be in 'Admins'.
+    """
+    try:
+        # Optionally remove user from all other groups first
+        if body.remove_from_all_other_groups:
+            listed = cognito_client.admin_list_groups_for_user(
+                UserPoolId=COGNITO_USER_POOL_ID,
+                Username=body.username
+            )
+            current_groups = [g["GroupName"] for g in listed.get("Groups", [])]
+
+            for g in current_groups:
+                if g != body.target_group:
+                    cognito_client.admin_remove_user_from_group(
+                        UserPoolId=COGNITO_USER_POOL_ID,
+                        Username=body.username,
+                        GroupName=g
+                    )
+
+        # Ensure user is added to the target group
+        cognito_client.admin_add_user_to_group(
+            UserPoolId=COGNITO_USER_POOL_ID,
+            Username=body.username,
+            GroupName=body.target_group
+        )
+
+        return {
+            "message": f"User '{body.username}' is now in '{body.target_group}'",
+            "removed_other_groups": body.remove_from_all_other_groups
+        }
+
+    except cognito_client.exceptions.UserNotFoundException:
+        raise HTTPException(status_code=404, detail="User not found")
+    except cognito_client.exceptions.ResourceNotFoundException as e:
+        raise HTTPException(status_code=404, detail=f"Group not found: {e}")
+    except cognito_client.exceptions.NotAuthorizedException:
+        raise HTTPException(status_code=403, detail="Not authorized to modify groups")
+    except cognito_client.exceptions.TooManyRequestsException:
+        raise HTTPException(status_code=429, detail="Too many requests to Cognito")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to change group: {e}")

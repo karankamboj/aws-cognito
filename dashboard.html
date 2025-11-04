@@ -252,11 +252,13 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
   sessionStorage.removeItem("usedHostedUi");
 
   // 4) Finish logout
+  debugger;
   if (usedHostedUi) {
     // Clear Hosted UI cookies to avoid silent re-login
     const logoutUrl =
       `https://${base}/logout?client_id=${encodeURIComponent(CONFIG.clientId)}` +
       `&logout_uri=${encodeURIComponent(CONFIG.loginPage)}`; // must be in Allowed sign-out URLs
+      debugger;
     location.assign(logoutUrl);
   } else {
     location.assign(CONFIG.loginPage);
